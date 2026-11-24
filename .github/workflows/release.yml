@@ -49,13 +49,37 @@ jobs:
         if: steps.ver.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          REPO: ${{ github.repository }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.ver.outputs.tag }}" -m "Release ${{ steps.ver.outputs.tag }}"
-          git push origin "${{ steps.ver.outputs.tag }}"
-          gh release create "${{ steps.ver.outputs.tag }}" \
-            --title "OpenCreator Send ${{ steps.ver.outputs.tag }}" \
-            --generate-notes \
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+          CHANGELOG=$(gh api "repos/$REPO/releases/generate-notes" -f tag_name="$TAG" -q .body)
+          cat > release_notes.md <<EOF
+          ## Install / Update
+
+          **Linux / macOS (pinned to $TAG):**
+          \`\`\`sh
+          curl -fsSL "https://raw.githubusercontent.com/$REPO/$TAG/install.sh" | bash -s -- --ref "$TAG"
+          \`\`\`
+
+          **Latest \`main\`:**
+          \`\`\`sh
+          curl -fsSL "https://raw.githubusercontent.com/$REPO/main/install.sh" | bash
+          \`\`\`
+
+          **Manual install:** copy \`opencreator_send_any.py\` into \`orca_plugins/opencreator_send/\` inside OrcaSlicer's configuration folder (*Help > Show Configuration Folder*), then restart OrcaSlicer (2.5+).
+
+          ---
+
+          $CHANGELOG
+          EOF
+
+          gh release create "$TAG" \
+            --title "OpenCreator Send $TAG" \
+            --notes-file release_notes.md \
             opencreator_send_any.py \
             install.sh
