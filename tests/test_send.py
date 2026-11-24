@@ -317,10 +317,22 @@ def check_prefs():
                                           {"name": "extruder1", "filled": True, "material": "", "colour": "", "maps": ["T1"]}])
     assert unset.auto_mapping([{"tool": 1, "material": "PETG", "colour": "#000000"}]) == {"1": "extruder1"}
     assert send.Printer().blocked() == ""
-    assert send.Printer(klippy="shutdown").blocked() == "Klipper isn't ready."
-    assert send.Printer(state="printing").blocked() == "The printer is busy."
+    assert send.Printer(klippy="shutdown").blocked().startswith("Klipper isn't ready.")
+    assert send.Printer(state="printing").blocked().startswith("The printer is busy.")
     assert send.Printer(busy=True).printing()
     assert send.Printer(afc_error=True).blocked().startswith("AFC has an error")
+    empty_afc = send.Printer(afc=True, lanes=[lane("A", "#ff0000", ["T0"], filled=False)])
+    assert empty_afc.plan_mapping([{"tool": 0, "material": "PLA", "colour": "#ff0000"}], {"0": "A"})[1] == [
+        "No filament is loaded in any lane. Load a lane on the printer first."
+    ]
+    assert send.start_command("T1\n", "; nozzle_temperature_initial_layer = 210,245\n").startswith(
+        "C5_PRINT_START TOOL=1 HOTEND=245 BED=0"
+    )
+    try:
+        send.start_command("T0\n", "")
+        raise AssertionError("expected SetupError")
+    except send.SetupError:
+        pass
     print("prefs passed")
 
 

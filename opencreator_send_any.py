@@ -6,7 +6,7 @@
 # name = "OpenCreator Send"
 # description = "Print setup for the Creator 5 / 5 Pro on OpenCreator CFW: map filaments to AFC lanes and set print start options and timelapse for one print."
 # author = "OpenCreator"
-# version = "0.2.1"
+# version = "0.3.0"
 # ///
 from dataclasses import dataclass, field
 import json
@@ -141,11 +141,16 @@ def start_command(header, footer=""):
             chamber = float(match.group(2))
     if hotend is None:
         hotend = preheat
-    if hotend is None:
-        raise SetupError("No hotend temperature found near the start of the G-code.")
     material_header = header
     if len(header) >= WINDOW_BYTES and not header.endswith(("\n", "\r")):
         material_header = header.rpartition("\n")[0]
+    # Fall back to Orca's per-filament first-layer nozzle temperatures in the
+    # footer instead of erroring when there's no M104/M109 in the start G-code.
+    temps = _slot_list(r"nozzle_temperature_initial_layer", footer, material_header)
+    if hotend is None and tool < len(temps) and temps[tool] > 0:
+        hotend = temps[tool]
+    if hotend is None:
+        raise SetupError("No hotend temperature found near the start of the G-code.")
     materials = ()
     for source in (footer, material_header):
         found = None
@@ -170,7 +175,6 @@ def start_command(header, footer=""):
     tools = [index for index, value in enumerate(used[:TOOL_COUNT]) if value > 0]
     if tools:
         command += " USED_TOOLS=%s" % ",".join(map(str, tools))
-    temps = _slot_list(r"nozzle_temperature_initial_layer", footer, material_header)
     for index in tools:
         if index != tool and index < len(temps) and temps[index] > 0:
             command += " HOTEND%d=%g" % (index, temps[index])
@@ -470,9 +474,9 @@ class Printer:
 
     def blocked(self):
         if self.klippy != "ready":
-            return "Klipper isn't ready."
+            return "Klipper isn't ready. Wait for it to connect, or restart it on the printer."
         if self.printing():
-            return "The printer is busy."
+            return "The printer is busy. Send this file once the current print finishes."
         if self.afc_error:
             return "AFC has an error. Clear it on the printer first."
         return ""
@@ -531,6 +535,8 @@ class Printer:
         lanes = {lane["name"]: lane for lane in self.lanes}
         errors = []
         chosen = {}
+        if not any(lane["filled"] for lane in self.lanes):
+            return [], ["No filament is loaded in any lane. Load a lane on the printer first."]
         for tool in tools:
             name = mapping.get(str(tool["tool"]))
             if name not in lanes:
@@ -669,39 +675,40 @@ def view_state(printer, job):
 
 PAGE = r"""<!doctype html><html><head><meta charset="utf-8"><style>
 *{box-sizing:border-box}
-:root{--r:5px;--accent:var(--orca-accent,#2a8a4a)}
+:root{--r:5px;--accent:var(--orca-accent,#1aa37a)}
 html,body{height:100%;margin:0}
-body{padding:14px 16px;display:flex;flex-direction:column;gap:10px;overflow:hidden;font:14px/1.4 system-ui,-apple-system,sans-serif;background:var(--orca-bg,#fff);color:var(--orca-fg,#222)}
-.main{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px}
-h1{font-size:16px;margin:0 0 2px;overflow-wrap:anywhere;line-height:1.25}
-h2{font-size:13px;margin:0 0 8px;display:flex;align-items:center;gap:8px;color:inherit;min-height:26px}
+body{padding:12px 14px;display:flex;flex-direction:column;gap:8px;overflow:hidden;font:13.5px/1.35 system-ui,-apple-system,sans-serif;background:var(--orca-bg,#fff);color:var(--orca-fg,#222)}
+.main{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+h1{font-size:15.5px;margin:0 0 2px;overflow-wrap:anywhere;line-height:1.25}
+h2{font-size:13px;margin:0 0 6px;display:flex;align-items:center;gap:8px;color:inherit;min-height:22px}
 h2>span:first-child{font-weight:600}h2 .gap{flex:1}
-h3{font-size:12px;margin:0 0 4px;opacity:.65;font-weight:600}
-.card{border:1px solid #8884;border-radius:var(--r);padding:12px;background:#8881;flex-shrink:0}
-.top{display:flex;gap:12px;align-items:center}
-.top img{width:72px;height:72px;object-fit:contain;border-radius:var(--r);border:1px solid #8884;background:#8881;flex-shrink:0}
-.top>div{flex:1;min-width:0}
-.bar{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+h3{font-size:11px;margin:0 0 3px;opacity:.65;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.sec-title{justify-content:center;font-size:11px;letter-spacing:.1em;text-transform:uppercase;opacity:.65;margin-bottom:8px;min-height:0}
+.card{border:1px solid #8884;border-radius:var(--r);padding:10px 12px;background:#8881;flex-shrink:0}
+.top{display:flex;gap:14px;align-items:center;justify-content:space-between}
+.top-job{display:flex;gap:12px;align-items:center;min-width:0;flex:1}
+.top-job img{width:56px;height:56px;object-fit:contain;border-radius:var(--r);border:1px solid #8884;background:#8881;flex-shrink:0}
+.top-job>div{min-width:0;flex:1}
+.top-printer{display:flex;flex-direction:column;align-items:flex-end;gap:3px;flex-shrink:0;text-align:right}
+.printer-name{font-weight:600;font-size:14px}
+.status-line{display:flex;align-items:center;gap:6px;font-size:12px;flex-wrap:wrap;justify-content:flex-end}
+.sdot{display:inline-block;width:8px;height:8px;border-radius:var(--r);background:#888;flex-shrink:0}
+.sdot.ok{background:#1aa37a}.sdot.warn{background:#c77700}.sdot.bad{background:#d03030}
 .dim{opacity:.7;font-size:12.5px;font-weight:400}
-table{width:100%;border-collapse:collapse}
-tr+tr td{border-top:1px solid #8882}
-td{padding:7px 4px;vertical-align:top}
-.cell{min-height:30px;display:flex;align-items:center;gap:8px}
-td.tool{white-space:nowrap;font-weight:500;padding-left:9px}
-tr.r-warn td.tool{box-shadow:inset 3px 0 0 #c77700}tr.r-bad td.tool{box-shadow:inset 3px 0 0 #d03030}
-td.grams{white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;padding-right:8px}
-td.grams .cell{justify-content:flex-end}
-td.arr{opacity:.45;text-align:center;width:20px}
-td.arr .cell{justify-content:center}
-td.lane{width:100%}
-.dot{display:inline-block;width:16px;height:16px;border-radius:var(--r);border:1px solid #8888;flex-shrink:0}
-.pick{min-height:30px;display:flex;align-items:center;gap:8px}
-select{flex:1;min-width:0;height:30px;padding:0 8px;border:1px solid #8885;border-radius:var(--r);background:var(--orca-bg,#fff);color:inherit;font:inherit}
-.note{font-size:12.5px;margin-top:3px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px 18px}
-.mon{margin-top:10px;padding-top:10px;border-top:1px solid #8882}
-label{display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer;user-select:none;min-height:28px}
-label{position:relative}
+.map-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px}
+.tcard{border:1px solid #8884;border-radius:var(--r);background:var(--orca-bg,#fff);display:flex;flex-direction:column;overflow:hidden}
+.tcard.r-warn{border-color:#c77700aa}.tcard.r-bad{border-color:#d03030aa}
+.tcard-head{padding:5px 9px;display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:12.5px;font-weight:600;border-bottom:1px solid #8882}
+.tcard-body{padding:8px;display:flex;flex-direction:column;gap:5px;flex:1}
+.pick{display:flex;align-items:center;gap:6px}
+.dot{display:inline-block;width:18px;height:18px;border-radius:var(--r);border:1px solid #8886;flex-shrink:0}
+select{flex:1;min-width:0;height:28px;padding:0 8px;border:1px solid #8885;border-radius:var(--r);background:var(--orca-bg,#fff);color:inherit;font:inherit;font-size:12.5px}
+.tcard-meta{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:12px;min-height:16px}
+.note{font-size:11.5px;line-height:1.3}
+.map-actions{display:flex;justify-content:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:3px 18px}
+.mon{margin-top:7px;padding-top:7px;border-top:1px solid #8882}
+label{display:flex;align-items:center;gap:8px;padding:2px 0;cursor:pointer;user-select:none;min-height:24px;position:relative}
 input[type=checkbox]{position:absolute;opacity:0;width:18px;height:18px;margin:0;pointer-events:none}
 input[type=checkbox]+span::before{content:"";display:inline-block;box-sizing:border-box;width:18px;height:18px;margin-right:8px;vertical-align:-4px;border:2px solid #888;border-color:color-mix(in srgb,currentColor 55%,transparent);border-radius:var(--r);background:center/12px no-repeat}
 input[type=checkbox]+span{white-space:nowrap;flex-shrink:0}
@@ -710,10 +717,8 @@ input[type=checkbox]:checked+span::before{background-color:var(--accent);border-
 input[type=checkbox]:focus-visible+span::before{outline:2px solid var(--accent);outline-offset:2px}
 label.off{opacity:.45}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.warn{color:#c77700}.bad{color:#d03030}.ok{color:#2a8a4a}
-.pill{display:inline-block;padding:2px 10px;border-radius:var(--r);font-size:12.5px;font-weight:600;color:#fff;background:#888}
-.pill.ok{background:#2a8a4a}.pill.warn{background:#c77700}.pill.bad{background:#d03030}
-.tag{font-size:11.5px;padding:0 6px;border-radius:var(--r);background:#8883;white-space:nowrap;font-weight:400}
+.warn{color:#c77700}.bad{color:#d03030}.ok{color:#1aa37a}
+.tag{font-size:11px;padding:1px 6px;border-radius:var(--r);background:#8883;white-space:nowrap;font-weight:500}
 #message{font-size:12.5px;flex-shrink:0}
 #message:empty{display:none}
 #message>div{padding:8px 12px;border-radius:var(--r);border:1px solid #8884;background:#8881}
@@ -722,19 +727,20 @@ label.off{opacity:.45}
 #message>div.warn{border-color:#c7770066;background:#c7770018}
 .feet{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;align-items:center;padding-top:10px;border-top:1px solid #8883;flex-shrink:0}
 .feet .gap{flex:1}
-button{padding:7px 14px;cursor:pointer;font:inherit;border-radius:var(--r);border:1px solid #8886;background:#8882;color:inherit}
+button{padding:7px 14px;cursor:pointer;font:inherit;border-radius:var(--r);border:1px solid #8885;background:#8881;color:inherit}
 button:hover:not(:disabled){background:#8883}
-button.main{background:var(--accent);color:#fff;border-color:transparent;font-weight:600;padding:7px 18px}
+button.main{background:var(--accent);color:#fff;border-color:transparent;font-weight:600;padding:8px 22px}
 button.main:hover:not(:disabled){opacity:.92}
-button.cancel{border-color:#d0303088;background:#d0303022;color:#d84545}
-button.cancel:hover:not(:disabled){background:#d0303038}
-button.small{padding:3px 10px;font-size:12.5px}
+button.small{padding:4px 10px;font-size:12px}
 button:disabled{opacity:.45;cursor:default}
 </style></head><body>
 <div class="main">
-<div class="card top"><img id="thumb" hidden alt=""><div><h1 id="name"></h1><div class="dim" id="facts"></div>
-<div class="bar"><span class="pill" id="pill">Reading...</span><button class="small" id="refresh" title="Read the printer again">Refresh</button></div></div></div>
-<div class="card" id="mapbox" hidden><h2><span>Filament to lane</span><span class="gap"></span><button class="small" id="current" hidden title="Use the printer's current tool mapping">Current</button><button class="small" id="auto" title="Match each tool by material and colour">Auto match</button></h2><table id="map"></table></div>
+<div class="card top">
+ <div class="top-job"><img id="thumb" hidden alt=""><div><h1 id="name"></h1><div class="dim" id="facts"></div></div></div>
+ <div class="top-printer"><div class="printer-name">Creator 5</div><div class="status-line"><span class="dim" id="addr"></span><span class="sdot" id="sdot"></span><span id="pill">Reading...</span></div><button class="small" id="refresh" title="Read the printer again">Refresh</button></div>
+</div>
+<div class="card" id="mapbox" hidden><h2 class="sec-title">Filament Mapping</h2><div class="map-grid" id="map"></div>
+<div class="map-actions"><button class="small" id="auto" title="Match each tool by material and colour">Auto match</button><button class="small" id="current" hidden title="Use the printer's current tool mapping">Current mapping</button></div></div>
 <div class="card"><h2><span>Print options</span><span class="dim">this print only</span><span class="gap"></span><button class="small" id="reset" disabled title="Reset options to match the printer's switches">Reset to printer</button></h2>
 <div class="grid" id="options"></div>
 <div class="mon"><h3>Monitoring</h3>
@@ -743,23 +749,25 @@ button:disabled{opacity:.45;cursor:default}
 <label id="tl" hidden><input type="checkbox" id="timelapse"><span>Timelapse</span><span class="dim" id="tlnote"></span></label></div></div></div>
 </div>
 <div id="message"></div>
-<div class="feet"><button class="cancel" id="cancel">Cancel send</button><span class="gap"></span><button id="skip">Send unchanged</button>
+<div class="feet"><button id="cancel">Cancel send</button><span class="gap"></span><button id="skip">Send unchanged</button>
 <button id="apply" class="main" disabled>Apply &amp; send</button></div>
 <script>
-const job=__JOB__;const $=id=>document.getElementById(id);let view=null,mapping={},auto={},busy=false,applying=false,busyText='',rows=[];
+const job=__JOB__;const $=id=>document.getElementById(id);let view=null,mapping={},auto={},busy=false,applying=false,busyText='',cards=[];
 const send=m=>window.orca.postMessage(m);
 const text=(tag,value,cls)=>{const e=document.createElement(tag);e.textContent=value;if(cls)e.className=cls;return e};
 const hex=c=>/^#?[0-9a-f]{6}$/i.test(c||'')?(c[0]=='#'?c:'#'+c):null;
 const hasColour=c=>/^#?[0-9a-f]{3,8}$/i.test(c||'');
 const dot=c=>{const s=document.createElement('span');s.className='dot';if(hasColour(c)){s.style.background=c[0]=='#'?c:'#'+c;s.title=c}return s};
 const rgb=c=>{const h=hex(c);return h?[1,3,5].map(i=>parseInt(h.substr(i,2),16)):null};
+const contrast=c=>{const v=rgb(c);return v&&(0.299*v[0]+0.587*v[1]+0.114*v[2])>155?'#111':'#fff'};
 const dist=(a,b)=>{a=rgb(a);b=rgb(b);return a&&b?Math.hypot(a[0]-b[0],a[1]-b[1],a[2]-b[2]):0};
 const fam=s=>(s||'').replace(/\W/g,'').toUpperCase();
 const mapped=()=>view&&view.afc&&!view.bypass&&job.tools.length>0;
 const laneOf=t=>view.lanes.find(x=>x.name==mapping[t.tool]);
 const totalGrams=job.tools.reduce((s,t)=>s+Math.round((t.grams||0)*10),0)/10;
 $('name').textContent=job.name;
-$('facts').textContent=[job.time,totalGrams>0?totalGrams.toFixed(1)+' g':'',job.tools.map(t=>'T'+t.tool+(t.material?' '+t.material:'')).join(', ')].filter(Boolean).join(' · ');
+$('facts').textContent=[job.time,totalGrams>0?totalGrams.toFixed(1)+' g':'',job.layer_marks>0?job.layer_marks+' layers':'',job.tools.map(t=>'T'+t.tool+(t.material?' '+t.material:'')).join(', ')].filter(Boolean).join(' · ');
+if(job.address)$('addr').textContent=job.address.replace(/^https?:\/\//,'')+' ·';
 if(job.thumbnail){$('thumb').src='data:image/png;base64,'+job.thumbnail;$('thumb').hidden=false}
 function rowIssue(t){const l=laneOf(t);if(!l)return['bad','No lane chosen.'];if(!l.filled)return['bad',l.name+' has no filament.'];
  if(!view.share){const o=job.tools.find(x=>x!==t&&mapping[x.tool]==l.name);if(o)return['bad',l.name+' is also used by T'+o.tool+'.']}
@@ -768,27 +776,30 @@ function rowIssue(t){const l=laneOf(t);if(!l)return['bad','No lane chosen.'];if(
 function problems(){if(!view)return['-'];const out=[];if(view.blocked)out.push(view.blocked);
  if(mapped())for(const t of job.tools){const i=rowIssue(t);if(i[0]=='bad')out.push('T'+t.tool+': '+i[1])}return out}
 function laneLabel(x){const ext=x.extruder&&x.extruder!=x.name?' ('+x.extruder+')':'';return x.name+ext+' — '+(x.filled?x.material||'unset':'empty')}
-function buildMap(){const table=$('map');table.textContent='';rows=[];for(const t of job.tools){const r=table.insertRow();
- const a=r.insertCell(),ac=text('div','','cell');a.className='tool';ac.append(dot(t.colour),text('span','T'+t.tool+(t.material?' '+t.material:'')));a.append(ac);
- const g=r.insertCell();g.className='grams dim';g.append(text('div',t.grams?t.grams.toFixed(1)+' g':'','cell'));
- const ar=r.insertCell();ar.className='arr';ar.append(text('div','→','cell'));
- const c=r.insertCell(),box=document.createElement('div'),ld=dot(''),s=document.createElement('select'),tg=text('span','','tag'),nt=text('div','','note');
- c.className='lane';box.className='pick';ld.hidden=true;tg.hidden=true;nt.hidden=true;
- s.onchange=()=>choose(t.tool,s.value);box.append(ld,s,tg);c.append(box,nt);
- rows.push({t,tr:r,s,ld,tg,nt})}}
-function syncMapOptions(){if(!rows.length)buildMap();for(const r of rows){r.s.textContent='';
+function buildMap(){const grid=$('map');grid.textContent='';cards=[];for(const t of job.tools){
+ const card=text('div','','tcard'),head=text('div','','tcard-head'),body=text('div','','tcard-body');
+ const bg=hex(t.colour)||'#555';head.style.background=bg;head.style.color=contrast(bg);
+ head.append(text('span','[T'+t.tool+']'+(t.material?' '+t.material:'')),text('span',t.grams?t.grams.toFixed(1)+' g':''));
+ const pick=text('div','','pick'),ld=dot(''),s=document.createElement('select');
+ ld.hidden=true;s.onchange=()=>choose(t.tool,s.value);pick.append(ld,s);
+ const meta=text('div','','tcard-meta'),mat=text('span','','dim'),tg=text('span','','tag');tg.hidden=true;meta.append(mat,tg);
+ const nt=text('div','','note');nt.hidden=true;
+ body.append(pick,meta,nt);card.append(head,body);grid.append(card);
+ cards.push({t,card,s,ld,mat,tg,nt})}}
+function syncMapOptions(){if(!cards.length)buildMap();for(const r of cards){r.s.textContent='';
  for(const x of view.lanes){const o=document.createElement('option');o.value=x.name;o.disabled=!x.filled;o.textContent=laneLabel(x);r.s.append(o)}}}
-function drawMap(){if(!rows.length)syncMapOptions();let remapped=false;for(const r of rows){const t=r.t,l=laneOf(t),cur=view.current&&view.current[t.tool];
+function drawMap(){if(!cards.length)syncMapOptions();let remapped=false;for(const r of cards){const t=r.t,l=laneOf(t),cur=view.current&&view.current[t.tool];
  if(cur&&mapping[t.tool]!=cur)remapped=true;
  r.s.value=mapping[t.tool]||'';r.s.disabled=busy;
  if(l&&hasColour(l.colour)){r.ld.style.background=l.colour[0]=='#'?l.colour:'#'+l.colour;r.ld.title=l.colour;r.ld.hidden=false}else{r.ld.hidden=true}
+ r.mat.textContent=l?(l.filled?(l.material||'Loaded'):'Empty'):'Unmapped';
  if(cur&&mapping[t.tool]!=cur){r.tg.textContent=auto[t.tool]?'auto':'remap';r.tg.title='Printer currently maps T'+t.tool+' to '+cur;r.tg.hidden=false}else{r.tg.hidden=true}
  const i=rowIssue(t);
  if(i[1]){r.nt.textContent=i[1];r.nt.className='note '+i[0];r.nt.hidden=false}else{r.nt.hidden=true}
- r.tr.className='r-'+i[0];r.tr.title=i[1]||'Ready'}
+ r.card.className='tcard r-'+i[0];r.card.title=i[1]||'Ready'}
  $('current').hidden=!remapped}
 function choose(tool,lane){if(!view.share)for(const k in mapping)if(k!=tool&&mapping[k]==lane)mapping[k]=mapping[tool];mapping[tool]=lane;delete auto[tool];draw()}
-function pill(){const p=$('pill');let c='ok',t='Ready';if(view.blocked){c='bad';t='Not ready'}else if(view.printing){c='warn';t='Printing'}p.className='pill '+c;p.textContent=t;p.title='Printer state: '+(view.state||'unknown')}
+function pill(){const p=$('pill'),d=$('sdot');let c='ok',t='Ready';if(view.blocked){c='bad';t='Not ready'}else if(view.printing){c='warn';t='Printing'}d.className='sdot '+c;p.className=c;p.textContent=t;p.title='Printer state: '+(view.state||'unknown')}
 function syncOptionsUI(){if(!view)return;let diff=!$('buildplate_check').checked;
  $('plate_tag').hidden=$('buildplate_check').checked;
  const pl=document.querySelector('[data-option="purge_line"]'),pla=document.querySelector('[data-option="purge_line_all_tools"]');
@@ -815,7 +826,7 @@ function load(state){view=state;mapping=Object.assign({},state.mapping);auto={};
 function options(){const out={buildplate_check:$('buildplate_check').checked};document.querySelectorAll('[data-option]').forEach(i=>out[i.dataset.option]=i.checked);return out}
 function apply(){if($('apply').disabled)return;busy=true;applying=true;busyText='Updating lanes and preparing the file...';draw();send({action:'apply',mapping,options:options(),timelapse:view.timelapse?$('timelapse').checked:null})}
 window.orca.onMessage(d=>{busy=false;applying=false;if(d.kind=='state')load(d);else if(d.kind=='mapping'){mapping=d.mapping;auto={};for(const t of job.tools)if(!view||!view.current||mapping[t.tool]!=view.current[t.tool])auto[t.tool]=1;draw()}
- else if(d.kind=='error'){if(!view){$('pill').textContent='unavailable';$('pill').className='pill bad'}$('message').textContent='';$('message').append(text('div',d.message,'bad'));$('apply').disabled=!view;for(const id of ['refresh','auto','current','cancel','skip'])$(id).disabled=false;syncOptionsUI()}});
+ else if(d.kind=='error'){if(!view){$('pill').textContent='Unavailable';$('pill').className='bad';$('sdot').className='sdot bad'}$('message').textContent='';$('message').append(text('div',d.message,'bad'));$('apply').disabled=!view;for(const id of ['refresh','auto','current','cancel','skip'])$(id).disabled=false;syncOptionsUI()}});
 $('refresh').onclick=()=>{busy=true;busyText='Reading the printer...';draw();send({action:'read'})};$('auto').onclick=()=>{send({action:'auto'})};
 $('current').onclick=()=>{if(view&&view.current){mapping=Object.assign({},view.current);auto={};draw()}};
 $('reset').onclick=()=>{if(!view)return;$('buildplate_check').checked=true;document.querySelectorAll('[data-option]').forEach(i=>{i.checked=i.dataset.printer=='1';i.onchange()});syncOptionsUI()};
@@ -936,9 +947,10 @@ if orca is not None:
                 return orca.ExecutionResult.skipped("No working file or printer address.")
             try:
                 job = read_job(path, ctx.output_name or "")
+                job["address"] = address
                 session = SetupSession(Moonraker(address, str(get("printhost_apikey") or "")), job, path)
                 session.window = orca.host.ui.create_window(
-                    html=page_html(job), title="OpenCreator Send", width=640, height=680,
+                    html=page_html(job), title="OpenCreator Send", width=760, height=720,
                     on_message=session.on_message, on_close=lambda: session.finish(session.result))
             except Exception as error:  # a setup problem must not stop an ordinary send
                 log(traceback.format_exc())
